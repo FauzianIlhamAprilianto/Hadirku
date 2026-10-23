@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HadirKu - Presensi Kehadiran Kelas</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>tailwind.config={theme:{extend:{colors:{ink:'#14213D',brand:'#0F766E'}}}}</script>
+<style>
+body{font-family:'Bricolage Grotesque',system-ui,sans-serif;background:#F2F5F9;color:#14213D}
+.sq{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;color:#fff;font-size:10px;font-weight:700}
+.H{background:#0F766E}.I{background:#2563EB}.S{background:#B45309}.A{background:#BE123C}
+.off{background:#E2E8F0!important;color:#64748B!important}
+:focus-visible{outline:2px solid #0F766E;outline-offset:2px}
+@media print{header,.noprint{display:none!important}body{background:#fff}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="modal" class="hidden fixed inset-0 bg-ink/50 z-40 items-end sm:items-center justify-center p-4"><div id="mbox" class="bg-white rounded-xl w-full max-w-md p-5"></div></div>
+<div id="toast" class="hidden fixed bottom-4 left-1/2 -translate-x-1/2 bg-ink text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90vw] text-center"></div>
+<script>
+const C='bg-white rounded-xl border border-slate-200 p-4',ROLE={admin:'Admin',dosen:'Dosen',mhs:'Mahasiswa'},ST={H:'Hadir',I:'Izin',S:'Sakit',A:'Alpa'};
+const $=s=>document.querySelector(s),E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pct=a=>a.length?Math.round(a.filter(x=>x=='H').length/a.length*100):0;
+const today=()=>new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+const strip=a=>a.map((x,i)=>`<span class="sq ${x}" title="Pertemuan ${i+1}: ${ST[x]}">${x}</span>`).join('');
+
+/* ---------- Data demo (disimpan di localStorage) ---------- */
+function seed(){
+ let r=7;const rnd=()=>(r=(r*9301+49297)%233280)/233280;
+ const students=[['265150200111042','Fauzian Ilham Aprilianto'],['265150207111044','Muhammad Rayhan Joanaputra'],['265150200111055',"Muhammad Fikri Naafi'an"],['265150200111061','Aulia Rahmawati'],['265150200111073','Bagus Prasetyo'],['265150200111080','Citra Maharani']].map((s,i)=>({id:'S'+i,nim:s[0],nama:s[1]}));
+ const classes=[{id:'C0',nama:'Rekayasa Perangkat Lunak',dosen:'Dr. Hendra Wijaya',hari:'Senin',jam:'07:30-09:10'},{id:'C1',nama:'Pemrograman Dasar',dosen:'Dr. Hendra Wijaya',hari:'Selasa',jam:'09:20-11:00'},{id:'C2',nama:'Kalkulus',dosen:'Prof. Dimas Anggoro',hari:'Kamis',jam:'13:00-14:40'}];
+ const ds=Array.from({length:8},(_,i)=>new Date(Date.UTC(2026,8,1+7*i)).toISOString().slice(0,10)),att={},dates={};
+ classes.forEach(c=>{dates[c.id]=ds.slice();att[c.id]={};students.forEach((s,i)=>{const low=i==4||(i==0&&c.id=='C2');att[c.id][s.id]=ds.map(()=>{const x=rnd();return x<(low?.55:.85)?'H':x<(low?.7:.91)?'I':x<.96?'S':'A'})})});
+ return{users:[{u:'admin',p:'admin123',role:'admin',nama:'Admin Akademik'},{u:'dosen',p:'dosen123',role:'dosen',nama:'Dr. Hendra Wijaya'},{u:'mahasiswa',p:'mhs123',role:'mhs',nama:'Fauzian Ilham Aprilianto',sid:'S0'}],students,classes,att,dates,sess:null};
+}
+let db;try{db=JSON.parse(localStorage.getItem('hadirku'))}catch(e){}db=db||seed();
+const save=()=>{try{localStorage.setItem('hadirku',JSON.stringify(db))}catch(e){}};
+let me=null,view='',lm='in',rf={c:'',s:'',a:'',b:''};
+const myC=()=>db.classes.filter(c=>c.dosen==me.nama);
+
+/* ---------- Util UI ---------- */
+function toast(t){const o=$('#toast');o.textContent=t;o.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>o.classList.add('hidden'),2800)}
+function X(){$('#modal').classList.add('hidden')}
+function M(title,fields,vals,cb){
+ $('#mbox').innerHTML=`<h3 class="font-bold text-lg mb-3">${title}</h3><form id="f" class="space-y-3">${fields.map(f=>`<label class="block text-sm">${f[1]}<input name="${f[0]}" value="${E(vals[f[0]])}" required class="mt-1 w-full border rounded-lg px-3 py-2"></label>`).join('')}<div class="flex gap-2 justify-end pt-2"><button type="button" onclick="X()" class="px-4 py-2 rounded-lg border">Batal</button><button class="px-4 py-2 rounded-lg bg-brand text-white">Simpan</button></div></form>`;
+ $('#modal').classList.remove('hidden');
+ $('#f').onsubmit=e=>{e.preventDefault();cb(Object.fromEntries(new FormData(e.target)));X();save();R()};
+}
+
+/* ---------- Autentikasi ---------- */
+function login(){
+ const up=lm=='up',inp=(n,l,t='text',r='required')=>`<label class="block text-sm">${l}<input name="${n}" type="${t}" ${r} class="mt-1 w-full border rounded-lg px-3 py-2"></label>`;
+ return `<div class="min-h-screen grid place-items-center p-4"><div class="${C} w-full max-w-sm !p-6"><h1 class="text-3xl font-bold">HadirKu</h1><p class="text-sm text-slate-500 mb-4">Presensi kehadiran kelas untuk admin, dosen, dan mahasiswa.</p>
+<div class="flex gap-4 border-b mb-4 text-sm">${[['in','Masuk'],['up','Daftar']].map(x=>`<button onclick="lm='${x[0]}';R()" class="pb-2 -mb-px border-b-2 ${lm==x[0]?'border-brand font-semibold':'border-transparent text-slate-500'}">${x[1]}</button>`).join('')}</div>
+<form onsubmit="${up?'doUp':'doIn'}(event)" class="space-y-3">${up?inp('nama','Nama lengkap')+`<label class="block text-sm">Peran<select name="role" class="mt-1 w-full border rounded-lg px-3 py-2 bg-white"><option value="mhs">Mahasiswa</option><option value="dosen">Dosen</option><option value="admin">Admin</option></select></label>`+inp('nim','NIM (khusus mahasiswa)','text',''):''}${inp('u','Username')}${inp('p','Kata sandi','password')}<button class="w-full bg-brand text-white rounded-lg py-2.5 font-semibold">${up?'Buat akun':'Masuk'}</button></form>
+${up?'':`<div class="mt-4 text-xs text-slate-500">Akun demo, klik untuk masuk:<div class="flex gap-2 mt-1">${db.users.slice(0,3).map(u=>`<button onclick="demo('${u.u}')" class="border rounded-full px-3 py-1 text-slate-700">${ROLE[u.role]}</button>`).join('')}</div></div>`}
+<button onclick="localStorage.removeItem('hadirku');location.reload()" class="mt-4 text-xs text-slate-400 underline">Reset data demo</button></div></div>`;
+}
+function doIn(e){e.preventDefault();const f=Object.fromEntries(new FormData(e.target)),u=db.users.find(x=>x.u==f.u&&x.p==f.p);if(!u)return toast('Username atau kata sandi salah');me=u;view='';R()}
+function doUp(e){e.preventDefault();const f=Object.fromEntries(new FormData(e.target));if(db.users.some(x=>x.u==f.u))return toast('Username sudah dipakai, pilih yang lain');let sid;
+ if(f.role=='mhs'){sid='S'+Date.now();db.students.push({id:sid,nim:f.nim||'-',nama:f.nama});db.classes.forEach(c=>db.att[c.id][sid]=[])}
+ me={u:f.u,p:f.p,role:f.role,nama:f.nama,sid};db.users.push(me);save();view='';R();toast('Akun dibuat. Selamat datang, '+f.nama)}
+const demo=u=>{me=db.users.find(x=>x.u==u);view='';R()},go=v=>{view=v;R()},out=()=>{me=null;view='';R()};
+
+/* ---------- Admin: mahasiswa & kelas ---------- */
+const stF=[['nim','NIM'],['nama','Nama lengkap']],kF=[['nama','Nama mata kuliah'],['dosen','Dosen pengampu'],['hari','Hari'],['jam','Jam (contoh 07:30-09:10)']];
+function addS(){M('Tambah mahasiswa',stF,{},v=>{const id='S'+Date.now();db.students.push({id,...v});db.classes.forEach(c=>db.att[c.id][id]=[]);toast('Mahasiswa ditambahkan')})}
+function editS(id){const s=db.students.find(x=>x.id==id);M('Ubah mahasiswa',stF,s,v=>{Object.assign(s,v);toast('Data mahasiswa diperbarui')})}
+function delS(id){if(!confirm('Hapus mahasiswa ini beserta riwayat kehadirannya?'))return;db.students=db.students.filter(x=>x.id!=id);db.classes.forEach(c=>delete db.att[c.id][id]);save();R();toast('Mahasiswa dihapus')}
+function addK(){M('Tambah kelas',kF,{},v=>{const id='C'+Date.now();db.classes.push({id,...v});db.att[id]={};db.students.forEach(s=>db.att[id][s.id]=[]);db.dates[id]=[];toast('Kelas ditambahkan')})}
+function editK(id){const c=db.classes.find(x=>x.id==id);M('Ubah kelas',kF,c,v=>{Object.assign(c,v);toast('Kelas diperbarui')})}
+function delK(id){if(!confirm('Hapus kelas ini beserta data kehadirannya?'))return;db.classes=db.classes.filter(x=>x.id!=id);delete db.att[id];delete db.dates[id];if(db.sess&&db.sess.cid==id)db.sess=null;save();R();toast('Kelas dihapus')}
+
+/* ---------- Dosen: sesi presensi ---------- */
+function openS(id){if(db.sess)return toast('Tutup sesi yang sedang berjalan lebih dulu');db.sess={cid:id,code:Math.random().toString(36).slice(2,8).toUpperCase(),marks:{},d:today()};save();R();toast('Sesi presensi dibuka')}
+function mk(sid,k){db.sess.marks[sid]=k;save();R()}
+function shut(){const s=db.sess;db.students.forEach(x=>(db.att[s.cid][x.id]=db.att[s.cid][x.id]||[]).push(s.marks[x.id]||'A'));db.dates[s.cid].push(s.d);db.sess=null;save();R();toast('Sesi disimpan ke riwayat kehadiran')}
+function sessPanel(){
+ const s=db.sess,c=db.classes.find(x=>x.id==s.cid),n=db.students.filter(x=>s.marks[x.id]=='H').length;
+ return `<div class="${C}"><div class="flex flex-wrap gap-4 items-center"><div id="qr" class="p-1 border rounded"></div><div><div class="text-sm text-slate-500">${E(c.nama)}, pertemuan ke-${db.dates[c.id].length+1}</div><div class="text-4xl font-bold tracking-widest">${s.code}</div><div class="text-sm">Mahasiswa memindai QR atau mengetik kode ini. ${n} dari ${db.students.length} hadir.</div></div><button onclick="shut()" class="ml-auto bg-ink text-white rounded-lg px-3 py-2 text-sm">Tutup dan simpan sesi</button></div></div>
+<div class="${C}"><p class="text-xs text-slate-500 mb-1">Tandai manual jika perlu. Yang belum ditandai dicatat Alpa saat sesi ditutup.</p>${db.students.map(x=>`<div class="flex items-center gap-1.5 py-2 border-t"><span class="flex-1 text-sm">${E(x.nama)}</span>${Object.keys(ST).map(k=>`<button onclick="mk('${x.id}','${k}')" title="${ST[k]}" class="sq ${s.marks[x.id]==k?k:'off'}" style="width:28px;height:28px">${k}</button>`).join('')}</div>`).join('')}</div>`;
+}
+
+/* ---------- Mahasiswa: isi presensi ---------- */
+function fill(code){
+ const s=db.sess;if(!s)return toast('Belum ada sesi presensi yang dibuka');
+ if(String(code).trim().toUpperCase()!=s.code)return toast('Kode tidak cocok. Periksa kode di layar dosen');
+ if(s.marks[me.sid]=='H')return toast('Anda sudah tercatat hadir di sesi ini');
+ s.marks[me.sid]='H';save();R();toast('Presensi berhasil dicatat')}
+
+/* ---------- Laporan (Admin & Dosen) ---------- */
+function repRows(){
+ const cs=me.role=='dosen'?myC():db.classes;if(!cs.length)return{cs};
+ const c=cs.find(x=>x.id==rf.c)||cs[0];rf.c=c.id;const ds=db.dates[c.id];
+ return{c,cs,rows:db.students.filter(s=>!rf.s||s.id==rf.s).map(s=>{const a=db.att[c.id][s.id]||[],o=ds.length-a.length;return{s,sel:a.filter((x,k)=>{const d=ds[k+o];return(!rf.a||d>=rf.a)&&(!rf.b||d<=rf.b)})}})};
+}
+const cnt=(r,k)=>r.sel.filter(x=>x==k).length;
+function exp(){
+ const{c,rows}=repRows(),t=[['NIM','Nama','Hadir','Izin','Sakit','Alpa','Persen']].concat(rows.map(r=>[r.s.nim,r.s.nama,...'HISA'.split('').map(k=>cnt(r,k)),pct(r.sel)+'%']));
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeffsep=,\n'+t.map(r=>r.map(v=>'"'+v+'"').join(',')).join('\n')],{type:'text/csv'}));
+ a.download='laporan-'+c.nama.replace(/\W+/g,'-')+'.csv';a.click();toast('Laporan diekspor, buka dengan Excel')}
+function lapView(){
+ const{c,cs,rows}=repRows();if(!c)return `<div class="${C} text-sm">Belum ada kelas atas nama Anda. Minta admin menetapkan Anda sebagai dosen pengampu.</div>`;
+ const sel=(n,o,v,ph)=>`<select onchange="rf.${n}=this.value;R()" class="border rounded-lg px-2 py-2 text-sm bg-white">${ph?`<option value="">${ph}</option>`:''}${o.map(x=>`<option value="${x[0]}" ${x[0]==v?'selected':''}>${E(x[1])}</option>`).join('')}</select>`;
+ return `<h1 class="text-2xl font-bold">Laporan kehadiran</h1>
+<div class="${C} noprint flex flex-wrap gap-2 items-center">${sel('c',cs.map(x=>[x.id,x.nama]),c.id)}${sel('s',db.students.map(x=>[x.id,x.nama]),rf.s,'Semua mahasiswa')}<input type="date" value="${rf.a}" onchange="rf.a=this.value;R()" class="border rounded-lg px-2 py-2 text-sm" title="Dari tanggal"><input type="date" value="${rf.b}" onchange="rf.b=this.value;R()" class="border rounded-lg px-2 py-2 text-sm" title="Sampai tanggal"></div>
+<div class="${C} overflow-x-auto"><div class="flex items-center mb-2"><div><b>${E(c.nama)}</b><div class="text-xs text-slate-500">${E(c.dosen)}${rf.a||rf.b?`, ${rf.a||'awal'} sampai ${rf.b||'akhir'}`:''}</div></div><div class="ml-auto flex gap-2 noprint"><button onclick="exp()" class="border rounded-lg px-3 py-1.5 text-sm"><i class="fa-solid fa-file-excel"></i> Excel</button><button onclick="print()" class="border rounded-lg px-3 py-1.5 text-sm"><i class="fa-solid fa-file-pdf"></i> PDF</button></div></div>
+<table class="w-full text-sm"><tr class="text-left text-slate-500"><th class="py-1 font-medium">Mahasiswa</th><th>H</th><th>I</th><th>S</th><th>A</th><th>%</th><th class="hidden sm:table-cell font-medium">Riwayat</th></tr>${rows.map(r=>`<tr class="border-t"><td class="py-2">${E(r.s.nama)}<div class="text-xs text-slate-500">${E(r.s.nim)}</div></td>${'HISA'.split('').map(k=>`<td>${cnt(r,k)}</td>`).join('')}<td class="font-bold ${pct(r.sel)<75?'text-rose-700':'text-brand'}">${pct(r.sel)}%</td><td class="hidden sm:table-cell"><div class="flex gap-0.5">${strip(r.sel)}</div></td></tr>`).join('')}</table>
+<p class="text-xs text-slate-500 mt-2">H hadir, I izin, S sakit, A alpa. Persen dihitung dari jumlah hadir.</p></div>`;
+}
+
+/* ---------- Tampilan per peran ---------- */
+const V={
+ admin_dash:()=>{
+  const av=db.classes.map(c=>[c,pct(Object.values(db.att[c.id]).flat())]),low=[];
+  db.classes.forEach(c=>db.students.forEach(s=>{const a=db.att[c.id][s.id]||[];if(a.length&&pct(a)<75)low.push(`<div class="flex justify-between text-sm py-1.5 border-t"><span>${E(s.nama)}<span class="text-slate-500">, ${E(c.nama)}</span></span><b class="text-rose-700">${pct(a)}%</b></div>`)}));
+  return `<h1 class="text-2xl font-bold">Ringkasan kehadiran</h1>
+<div class="grid grid-cols-3 gap-3 text-center">${[['Mahasiswa',db.students.length],['Kelas',db.classes.length],['Rata-rata hadir',Math.round(av.reduce((a,x)=>a+x[1],0)/(av.length||1))+'%']].map(x=>`<div class="${C}"><div class="text-2xl font-bold">${x[1]}</div><div class="text-xs text-slate-500">${x[0]}</div></div>`).join('')}</div>
+<div class="${C}"><h2 class="font-semibold mb-3">Kehadiran per kelas</h2>${av.map(x=>`<div class="mb-3"><div class="flex justify-between text-sm"><span>${E(x[0].nama)}</span><b>${x[1]}%</b></div><div class="h-2 bg-slate-100 rounded"><div class="h-2 rounded bg-brand" style="width:${x[1]}%"></div></div></div>`).join('')}</div>
+<div class="${C}"><h2 class="font-semibold mb-2">Kehadiran di bawah 75%</h2>${low.join('')||'<p class="text-sm text-slate-500">Semua mahasiswa memenuhi batas minimum.</p>'}</div>`},
+ admin_mhs:()=>`<div class="flex items-center"><h1 class="text-2xl font-bold">Data mahasiswa</h1><button onclick="addS()" class="ml-auto bg-brand text-white rounded-lg px-3 py-2 text-sm"><i class="fa-solid fa-plus"></i> Tambah</button></div><div class="${C}"><table class="w-full text-sm">${db.students.map(s=>`<tr class="border-t first:border-0"><td class="py-2">${E(s.nama)}<div class="text-xs text-slate-500">${E(s.nim)}</div></td><td class="text-right whitespace-nowrap"><button onclick="editS('${s.id}')" class="px-2 text-brand">Ubah</button><button onclick="delS('${s.id}')" class="px-2 text-rose-700">Hapus</button></td></tr>`).join('')}</table></div>`,
+ admin_kelas:()=>`<div class="flex items-center"><h1 class="text-2xl font-bold">Kelas dan jadwal</h1><button onclick="addK()" class="ml-auto bg-brand text-white rounded-lg px-3 py-2 text-sm"><i class="fa-solid fa-plus"></i> Tambah</button></div>`+db.classes.map(c=>`<div class="${C} flex items-center gap-3"><div><b>${E(c.nama)}</b><div class="text-sm text-slate-500">${E(c.dosen)}, ${E(c.hari)} ${E(c.jam)}</div></div><div class="ml-auto whitespace-nowrap"><button onclick="editK('${c.id}')" class="px-2 text-brand">Ubah</button><button onclick="delK('${c.id}')" class="px-2 text-rose-700">Hapus</button></div></div>`).join(''),
+ admin_lap:lapView,dosen_lap:lapView,
+ dosen_dash:()=>{
+  const cs=myC(),s=db.sess;
+  return `<h1 class="text-2xl font-bold">Sesi presensi</h1>`+(s&&cs.some(c=>c.id==s.cid)?sessPanel():cs.length?cs.map(c=>`<div class="${C} flex items-center gap-3"><div><b>${E(c.nama)}</b><div class="text-sm text-slate-500">${E(c.hari)}, ${E(c.jam)}. ${db.dates[c.id].length} pertemuan tercatat</div></div><button onclick="openS('${c.id}')" class="ml-auto bg-brand text-white rounded-lg px-3 py-2 text-sm">Buka sesi</button></div>`).join(''):`<div class="${C} text-sm">Belum ada kelas atas nama Anda. Minta admin menetapkan Anda sebagai dosen pengampu.</div>`)},
+ mhs_dash:()=>{
+  const my=c=>db.att[c.id][me.sid]||[],low=db.classes.filter(c=>my(c).length&&pct(my(c))<75),s=db.sess,sc=s&&db.classes.find(c=>c.id==s.cid);
+  return `<h1 class="text-2xl font-bold">Halo, ${E(me.nama.split(' ')[0])}</h1>`+low.map(c=>`<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 text-sm"><i class="fa-solid fa-triangle-exclamation text-amber-600"></i> Kehadiran ${E(c.nama)} tinggal <b>${pct(my(c))}%</b>. Batas minimum 75% untuk mengikuti ujian.</div>`).join('')+
+  `<div class="${C}"><h2 class="font-semibold mb-2">Isi presensi</h2>`+(sc?`<p class="text-sm mb-3">Sesi dibuka untuk <b>${E(sc.nama)}</b>. ${s.marks[me.sid]=='H'?'Anda sudah tercatat hadir.':'Masukkan kode dari dosen.'}</p><div class="flex gap-2"><input id="kode" maxlength="6" placeholder="Kode 6 karakter" class="flex-1 min-w-0 border rounded-lg px-3 py-2 uppercase"><button onclick="fill($('#kode').value)" class="bg-brand text-white rounded-lg px-3 py-2 text-sm">Isi presensi</button></div><button onclick="fill(db.sess.code)" class="mt-2 text-sm text-brand underline"><i class="fa-solid fa-qrcode"></i> Demo: simulasikan scan QR</button>`:`<p class="text-sm text-slate-500">Belum ada sesi yang dibuka. Presensi bisa diisi saat dosen membuka sesi.</p>`)+`</div>`+
+  db.classes.map(c=>`<div class="${C}"><div class="flex justify-between"><b>${E(c.nama)}</b><b class="${pct(my(c))<75?'text-rose-700':'text-brand'}">${pct(my(c))}%</b></div><div class="text-xs text-slate-500 mb-2">${E(c.hari)}, ${E(c.jam)}</div><div class="flex flex-wrap gap-1">${strip(my(c))}</div></div>`).join('')},
+ mhs_riw:()=>`<h1 class="text-2xl font-bold">Riwayat kehadiran</h1><div class="flex gap-3 text-xs">${Object.entries(ST).map(([k,v])=>`<span class="flex items-center gap-1"><span class="sq ${k}">${k}</span>${v}</span>`).join('')}</div>`+db.classes.map(c=>{const a=db.att[c.id][me.sid]||[],ds=db.dates[c.id],o=ds.length-a.length;return `<div class="${C}"><b>${E(c.nama)}</b><table class="w-full text-sm mt-2">${a.map((x,i)=>`<tr class="border-t"><td class="py-1.5">Pertemuan ${o+i+1}</td><td>${ds[o+i]}</td><td class="text-right"><span class="sq ${x}">${x}</span> ${ST[x]}</td></tr>`).join('')||'<tr><td class="text-slate-500">Belum ada riwayat.</td></tr>'}</table></div>`}).join('')
+};
+const NAV={admin:[['dash','Ringkasan','gauge'],['mhs','Mahasiswa','users'],['kelas','Kelas dan jadwal','calendar-days'],['lap','Laporan','file-lines']],dosen:[['dash','Sesi presensi','qrcode'],['lap','Laporan kelas','file-lines']],mhs:[['dash','Presensi','hand'],['riw','Riwayat','clock-rotate-left']]};
+
+/* ---------- Render ---------- */
+function R(){
+ if(!me){$('#app').innerHTML=login();return}
+ const n=NAV[me.role];if(!n.some(x=>x[0]==view))view=n[0][0];
+ $('#app').innerHTML=`<header class="noprint bg-ink text-white sticky top-0 z-30"><div class="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3"><b class="text-lg">HadirKu</b><span class="text-xs bg-white/15 rounded px-2 py-0.5">${ROLE[me.role]}</span><div class="ml-auto flex items-center gap-3 text-sm"><span class="hidden sm:inline">${E(me.nama)}</span><button onclick="out()"><i class="fa-solid fa-right-from-bracket"></i> Keluar</button></div></div>
+<nav class="max-w-4xl mx-auto px-4 flex gap-1 overflow-x-auto">${n.map(x=>`<button onclick="go('${x[0]}')" class="px-3 py-2 text-sm whitespace-nowrap border-b-2 ${view==x[0]?'border-teal-300':'border-transparent text-white/70'}"><i class="fa-solid fa-${x[2]} mr-1"></i>${x[1]}</button>`).join('')}</nav></header>
+<main class="max-w-4xl mx-auto p-4 space-y-4">${V[me.role+'_'+view]()}</main>`;
+ const q=$('#qr');if(q&&window.QRCode){q.innerHTML='';new QRCode(q,{text:'HADIRKU|'+db.sess.cid+'|'+db.sess.code,width:120,height:120})}
+}
+R();
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "hadirku-presensi-kelas",
+  "version": "1.0.0",
+  "description": "MVP mockup front-end aplikasi presensi kehadiran kelas",
+  "scripts": {
+    "start": "serve . -l tcp://0.0.0.0:${PORT:-3000}"
+  },
+  "dependencies": {
+    "serve": "^14.2.4"
+  }
+}
